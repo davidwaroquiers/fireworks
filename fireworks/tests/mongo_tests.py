@@ -79,7 +79,7 @@ class MongoTests(unittest.TestCase):
         try:
             cls.lp = LaunchPad(name=TESTDB_NAME, strm_lvl='ERROR')
             cls.lp.reset(password=None, require_password=False)
-        except:
+        except Exception:
             raise unittest.SkipTest('MongoDB is not running in localhost:27017! Skipping tests.')
 
     @classmethod
@@ -87,7 +87,8 @@ class MongoTests(unittest.TestCase):
         if cls.lp:
             cls.lp.connection.drop_database(TESTDB_NAME)
 
-    def _teardown(self, dests):
+    @staticmethod
+    def _teardown(dests):
         for f in dests:
             if os.path.exists(f):
                 os.remove(f)
@@ -355,6 +356,32 @@ class MongoTests(unittest.TestCase):
 
         self.assertEqual(len(modified_spec['_job_info']), 2)
 
+    def test_files_in_out(self):
+        # create the Workflow that passes files_in and files_out
+        fw1 = Firework(
+            [ScriptTask.from_str('echo "This is the first FireWork" > test1')],
+            spec={"_files_out": {"fwtest1": "test1"}}, fw_id=1)
+        fw2 = Firework([ScriptTask.from_str('gzip hello')], fw_id=2,
+                       parents=[fw1],
+                       spec={"_files_in": {"fwtest1": "hello"},
+                             "_files_out": {"fw2": "hello.gz"}})
+        fw3 = Firework([ScriptTask.from_str('cat fwtest.2')], fw_id=3,
+                       parents=[fw2],
+                       spec={"_files_in": {"fw2": "fwtest.2"}})
+        wf = Workflow([fw1, fw2, fw3],
+                      {fw1: [fw2], fw2: [fw3]})
+
+        # store workflow and launch it locally
+        self.lp.add_wf(wf)
+        launch_rocket(self.lp, self.fworker)
+        self.assertTrue(os.path.exists("test1"))
+        launch_rocket(self.lp, self.fworker)
+        self.assertTrue(os.path.exists("hello.gz"))
+        launch_rocket(self.lp, self.fworker)
+        self.assertTrue(os.path.exists("fwtest.2"))
+        for f in ["test1", "hello.gz", "fwtest.2"]:
+            os.remove(f)
+
     def test_preserve_fworker(self):
         fw1 = Firework([ScriptTask.from_str('echo "Testing preserve FWorker"')], spec={"_preserve_fworker": True}, fw_id=1)
         fw2 = Firework([ScriptTask.from_str('echo "Testing preserve FWorker pt 2"')], spec={"target": 1}, parents=[fw1], fw_id=2)
@@ -397,6 +424,38 @@ class MongoTests(unittest.TestCase):
         self.assertEqual(self.lp.get_fw_by_id(1).tasks[0]['script'][0], 'echo "Task 1"')
         self.assertEqual(self.lp.get_fw_by_id(2).tasks[0]['script'][0], 'echo "Task 2"')
 
+    def test_category(self):
+        task1 = ScriptTask.from_str('echo "Task 1"')
+        task2 = ScriptTask.from_str('echo "Task 2"')
+
+        spec = {'_category': 'dummy_category'}
+
+        fw1 = Firework(task1, fw_id=1, name='Task 1', spec=spec)
+        fw2 = Firework(task2, fw_id=2, name='Task 2', spec=spec)
+
+        self.lp.add_wf(Workflow([fw1, fw2]))
+
+        self.assertTrue(self.lp.run_exists(FWorker(category="dummy_category")))
+        self.assertFalse(self.lp.run_exists(FWorker(category="other category")))
+        self.assertFalse(self.lp.run_exists(FWorker(category="__none__")))
+        self.assertTrue(self.lp.run_exists(FWorker()))  # can run any category
+        self.assertTrue(self.lp.run_exists(FWorker(category=["dummy_category",
+                                                             "other category"])))
+
+    def test_category_pt2(self):
+        task1 = ScriptTask.from_str('echo "Task 1"')
+        task2 = ScriptTask.from_str('echo "Task 2"')
+
+        fw1 = Firework(task1, fw_id=1, name='Task 1')
+        fw2 = Firework(task2, fw_id=2, name='Task 2')
+
+        self.lp.add_wf(Workflow([fw1, fw2]))
+
+        self.assertFalse(self.lp.run_exists(FWorker(category="dummy_category")))
+        self.assertTrue(self.lp.run_exists(FWorker(category="__none__")))
+        self.assertTrue(self.lp.run_exists(FWorker())) # can run any category
+        self.assertFalse(self.lp.run_exists(FWorker(category=["dummy_category",
+                                                             "other category"])))
     def test_delete_fw(self):
         test1 = ScriptTask.from_str("python -c 'print(\"test1\")'", {'store_stdout': True})
         fw = Firework(test1)
@@ -407,7 +466,6 @@ class MongoTests(unittest.TestCase):
         self.lp.delete_wf(fw.fw_id)
         self.assertRaises(ValueError, self.lp.get_fw_by_id, fw.fw_id)
         self.assertRaises(ValueError, self.lp.get_launch_by_id, 1)
-
 
     def test_duplicate_delete_fw(self):
         test1 = ScriptTask.from_str("python -c 'print(\"test1\")'", {'store_stdout': True})
@@ -435,6 +493,8 @@ class MongoTests(unittest.TestCase):
         # TODO: if test keeps failing on Travis, add an explicit check of nlaunches>0 in the database here
         # this will ensure the first Rocket is actually in the DB
         launch_rocket(self.lp, self.fworker)
+
+        time.sleep(1)
 
         if self.lp.launches.count() > 1:
             print("TOO MANY LAUNCHES FOUND!")
@@ -487,7 +547,6 @@ class MongoTests(unittest.TestCase):
         launch_rocket(self.lp, self.fworker)
 
         self.assertEqual(self.lp.get_fw_by_id(2).spec['dummy2'], [True, True])
-
 
     def test_force_lock_removal(self):
         test1 = ScriptTask.from_str("python -c 'print(\"test1\")'", {'store_stdout': True})

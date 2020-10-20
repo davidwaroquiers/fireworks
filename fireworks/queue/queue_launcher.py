@@ -139,7 +139,7 @@ def launch_rocket_to_queue(launchpad, fworker, qadapter, launcher_dir='.', reser
                     launchpad.set_reservation_id(launch_id, reservation_id)
             return reservation_id
 
-        except:
+        except Exception:
             log_exception(l_logger, 'Error writing/submitting queue script!')
             if reserve and launch_id is not None:
                 try:
@@ -147,7 +147,7 @@ def launch_rocket_to_queue(launchpad, fworker, qadapter, launcher_dir='.', reser
                         fw.fw_id, launch_id))
                     launchpad.cancel_reservation(launch_id)
                     launchpad.forget_offline(launch_id)
-                except:
+                except Exception:
                     log_exception(l_logger, 'Error unreserving FW with fw_id {}'.format(fw.fw_id))
 
             return False
@@ -169,7 +169,8 @@ def rapidfire(launchpad, fworker, qadapter, launch_dir='.', nlaunches=0, njobs_q
         qadapter (QueueAdapterBase)
         launch_dir (str): directory where we want to write the blocks
         nlaunches (int): total number of launches desired; "infinite" for loop, 0 for one round
-        njobs_queue (int): stops submitting jobs when njobs_queue jobs are in the queue, 0 for no limit
+        njobs_queue (int): stops submitting jobs when njobs_queue jobs are in the queue, 0 for no limit.
+            If 0 skips the check on the number of jobs in the queue.
         njobs_block (int): automatically write a new block when njobs_block jobs are in a single block
         sleep_time (int): secs to sleep between rapidfire loop iterations
         reserve (bool): Whether to queue in reservation mode
@@ -202,13 +203,25 @@ def rapidfire(launchpad, fworker, qadapter, launch_dir='.', nlaunches=0, njobs_q
             block_dir = create_datestamp_dir(launch_dir, l_logger)
 
         while True:
-            # get number of jobs in queue
-            jobs_in_queue = _get_number_of_jobs_in_queue(qadapter, njobs_queue, l_logger)
+            # get number of jobs in queue if a maximum has been set.
+            jobs_in_queue = 0
+            if njobs_queue:
+                jobs_in_queue = _get_number_of_jobs_in_queue(qadapter, njobs_queue, l_logger)
             job_counter = 0  # this is for QSTAT_FREQUENCY option
 
-            while (not njobs_queue or jobs_in_queue < njobs_queue) and \
-                    (launchpad.run_exists(fworker) or (fill_mode and not reserve)) \
-                    and (not timeout or (datetime.now() - start_time).total_seconds() < timeout):
+            while (launchpad.run_exists(fworker) or
+                   (fill_mode and not reserve)):
+
+                if timeout and (datetime.now() - start_time).total_seconds() >= timeout:
+                    l_logger.info("Timeout reached.")
+                    break
+
+                if njobs_queue and jobs_in_queue >= njobs_queue:
+                    l_logger.info("Jobs in queue ({}) meets/exceeds "
+                                  "maximum allowed ({})".format(jobs_in_queue,
+                                                                njobs_queue))
+                    break
+
                 l_logger.info('Launching a rocket!')
 
                 # switch to new block dir if it got too big
@@ -218,32 +231,36 @@ def rapidfire(launchpad, fworker, qadapter, launch_dir='.', nlaunches=0, njobs_q
 
                 # launch a single job
                 return_code = launch_rocket_to_queue(launchpad, fworker, qadapter, block_dir, reserve,
-                                              strm_lvl, True, fill_mode)
+                                                     strm_lvl, True, fill_mode)
                 if return_code is None:
                     l_logger.info('No READY jobs detected...')
                     break
                 elif not return_code:
                     raise RuntimeError("Launch unsuccessful!")
                 num_launched += 1
-                if num_launched == nlaunches:
+                if nlaunches > 0 and num_launched == nlaunches:
+                    l_logger.info('Launched allowed number of '
+                                  'jobs: {}'.format(num_launched))
                     break
                 # wait for the queue system to update
                 l_logger.info('Sleeping for {} seconds...zzz...'.format(QUEUE_UPDATE_INTERVAL))
                 time.sleep(QUEUE_UPDATE_INTERVAL)
                 jobs_in_queue += 1
                 job_counter += 1
-                if job_counter % QSTAT_FREQUENCY == 0:
+                if job_counter % QSTAT_FREQUENCY == 0 and njobs_queue:
                     job_counter = 0
                     jobs_in_queue = _get_number_of_jobs_in_queue(qadapter, njobs_queue, l_logger)
 
-            if num_launched == nlaunches or nlaunches == 0 or \
-                    (timeout and (datetime.now() - start_time).total_seconds() >= timeout):
+            if (nlaunches > 0 and num_launched == nlaunches) or \
+                    (timeout and (datetime.now() - start_time).total_seconds()
+                     >= timeout) or (nlaunches == 0 and not launchpad.future_run_exists(fworker)):
                 break
+
             l_logger.info('Finished a round of launches, sleeping for {} secs'.format(sleep_time))
             time.sleep(sleep_time)
-            l_logger.info('Checking for Rockets to run...'.format(sleep_time))
+            l_logger.info('Checking for Rockets to run...')
 
-    except:
+    except Exception:
         log_exception(l_logger, 'Error with queue launcher rapid fire!')
 
 
@@ -282,7 +299,7 @@ def _get_number_of_jobs_in_queue(qadapter, njobs_queue, l_logger):
                 l_logger.info('{} jobs in queue. '
                               'Maximum allowed by user: {}'.format(jobs_in_queue, njobs_queue))
                 return jobs_in_queue
-        except:
+        except Exception:
             log_exception(l_logger, 'Could not get number of jobs in queue! '
                                     'Sleeping {} secs...zzz...'.format(RETRY_INTERVAL))
         time.sleep(RETRY_INTERVAL)

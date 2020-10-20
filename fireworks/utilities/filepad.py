@@ -11,14 +11,14 @@ import zlib
 import os
 
 from pymongo import MongoClient
+import pymongo
 import gridfs
 
 from monty.serialization import loadfn
 from monty.json import MSONable
 
-from fireworks.fw_config import LAUNCHPAD_LOC
+from fireworks.fw_config import LAUNCHPAD_LOC, MONGO_SOCKET_TIMEOUT_MS
 from fireworks.utilities.fw_utilities import get_fw_logger
-
 
 __author__ = 'Kiran Mathew'
 __email__ = 'kmathew@lbl.gov'
@@ -27,9 +27,12 @@ __credits__ = 'Anubhav Jain'
 
 class FilePad(MSONable):
 
-    def __init__(self, host='localhost', port=27017, database='fireworks', username=None,
-                 password=None, filepad_coll_name="filepad", gridfs_coll_name="filepad_gfs", logdir=None,
-                 strm_lvl=None):
+    def __init__(self, host='localhost', port=27017, database='fireworks',
+                 username=None, password=None, ssl=False, ssl_ca_certs=None,
+                 ssl_certfile=None, ssl_keyfile=None, ssl_pem_passphrase=None,
+                 authsource=None, uri_mode=False, mongoclient_kwargs=None,
+                 filepad_coll_name="filepad", gridfs_coll_name="filepad_gfs",
+                 logdir=None, strm_lvl=None, text_mode=False):
         """
         Args:
             host (str): hostname
@@ -37,27 +40,68 @@ class FilePad(MSONable):
             database (str): database name
             username (str)
             password (str)
+
+            ssl (bool): use TLS/SSL for mongodb connection
+            ssl_ca_certs (str): path to the CA certificate to be used for mongodb connection
+            ssl_certfile (str): path to the client certificate to be used for mongodb connection
+            ssl_keyfile (str): path to the client private key
+            ssl_pem_passphrase (str): passphrase for the client private key
+            authsource (str): authSource parameter for MongoDB authentication; defaults to "name" (i.e., db name) if
+                not set
+            uri_mode (bool): if set True, all Mongo connection parameters occur through a MongoDB URI string (set as
+                the host).
+            mongoclient_kwargs (dict): A list of any other custom keyword arguments to be
+                passed into the MongoClient connection (non-URI mode only)
+
             filepad_coll_name (str): filepad collection name
             gridfs_coll_name (str): gridfs collection name
             logdir (str): path to the log directory
             strm_lvl (str): the logger stream level
+            text_mode (bool): whether to use text_mode for file read/write (instead of binary). Might be useful if
+                working only with text files between Windows and Unix systems
         """
         self.host = host
         self.port = int(port)
         self.database = database
         self.username = username
         self.password = password
+        self.ssl = ssl
+        self.ssl_ca_certs = ssl_ca_certs
+        self.ssl_certfile = ssl_certfile
+        self.ssl_keyfile = ssl_keyfile
+        self.ssl_pem_passphrase = ssl_pem_passphrase
+        self.authsource = authsource or self.database
+        self.mongoclient_kwargs = mongoclient_kwargs or {}
+        self.uri_mode = uri_mode
+
         self.gridfs_coll_name = gridfs_coll_name
-        try:
-            self.connection = MongoClient(self.host, self.port)
-            self.db = self.connection[database]
-        except:
-            raise Exception("connection failed")
-        try:
-            if self.username:
-                self.db.authenticate(self.username, self.password)
-        except:
-            raise Exception("authentication failed")
+        self.text_mode = text_mode
+
+        # get connection
+        if uri_mode:
+            self.connection = MongoClient(host)
+            dbname = host.split('/')[-1].split('?')[
+                0]  # parse URI to extract dbname
+            self.db = self.connection[dbname]
+        else:
+            self.connection = MongoClient(self.host, self.port, ssl=self.ssl,
+                                          ssl_ca_certs=self.ssl_ca_certs,
+                                          ssl_certfile=self.ssl_certfile,
+                                          ssl_keyfile=self.ssl_keyfile,
+                                          ssl_pem_passphrase=self.ssl_pem_passphrase,
+                                          socketTimeoutMS=MONGO_SOCKET_TIMEOUT_MS,
+                                          username=self.username,
+                                          password=self.password,
+                                          authSource=self.authsource,
+                                          **self.mongoclient_kwargs)
+            self.db = self.connection[self.database]
+        # except Exception:
+        #     raise Exception("connection failed")
+        # try:
+        #     if self.username:
+        #         self.db.authenticate(self.username, self.password)
+        # except Exception:
+        #     raise Exception("authentication failed")
 
         # set collections: filepad and gridfs
         self.filepad = self.db[filepad_coll_name]
@@ -99,7 +143,7 @@ class FilePad(MSONable):
             (str, str): the id returned by gridfs, identifier
         """
         if identifier is not None:
-            file_contents, doc = self.get_file(identifier)
+            _, doc = self.get_file(identifier)
             if doc is not None:
                 self.logger.warning("identifier: {} exists. Skipping insertion".format(identifier))
                 return doc["gfs_id"], doc["identifier"]
@@ -110,7 +154,9 @@ class FilePad(MSONable):
                      "original_file_path": path,
                      "metadata": metadata,
                      "compressed": compress}
-        with open(path, "r") as f:
+
+        read_mode = "r" if self.text_mode else "rb"
+        with open(path, read_mode) as f:
             contents = f.read()
             return self._insert_contents(contents, identifier, root_data, compress)
 
@@ -138,17 +184,24 @@ class FilePad(MSONable):
         doc = self.filepad.find_one({"gfs_id": gfs_id})
         return self._get_file_contents(doc)
 
-    def get_file_by_query(self, query):
+    def get_file_by_query(self, query, sort_key=None,
+                          sort_direction=pymongo.DESCENDING):
         """
 
         Args:
-            query (dict): pymongo query dict
+            query (dict):                   pymongo query dict
+            sort_key (str, optional):       sort key, default None
+            sort_direction (int, optional): default pymongo.DESCENDING
 
         Returns:
             list: list of all (file content as a string, document dictionary)
         """
         all_files = []
-        for d in self.filepad.find(query):
+        if sort_key is None:
+            cursor = self.filepad.find(query)
+        else:
+            cursor = self.filepad.find(query).sort(sort_key, sort_direction)
+        for d in cursor:
             all_files.append(self._get_file_contents(d))
         return all_files
 
@@ -234,7 +287,9 @@ class FilePad(MSONable):
 
     def _insert_to_gridfs(self, contents, compress):
         if compress:
-            contents = zlib.compress(contents.encode(), compress)
+            if self.text_mode:
+                contents = contents.encode()
+            contents = zlib.compress(contents, compress)
         # insert to gridfs
         return str(self.gridfs.put(contents))
 
@@ -271,7 +326,8 @@ class FilePad(MSONable):
             return None, None
         old_gfs_id = doc["gfs_id"]
         self.gridfs.delete(old_gfs_id)
-        gfs_id = self._insert_to_gridfs(open(path, "r").read(), compress)
+        read_mode = "r" if self.text_mode else "rb"
+        gfs_id = self._insert_to_gridfs(open(path, read_mode).read(), compress)
         doc["gfs_id"] = gfs_id
         doc["compressed"] = compress
         return old_gfs_id, gfs_id
@@ -288,18 +344,43 @@ class FilePad(MSONable):
         creds = loadfn(db_file)
 
         if admin:
-            user = creds.get("admin_user")
-            password = creds.get("admin_password")
+            user = creds.get("admin_user", creds.get("username"))
+            password = creds.get("admin_password", creds.get("password"))
         else:
-            user = creds.get("readonly_user")
-            password = creds.get("readonly_password")
+            user = creds.get("readonly_user", creds.get("username"))
+            password = creds.get("readonly_password", creds.get("password"))
+
+        ssl = creds.get('ssl', False)
+        ssl_ca_certs = creds.get('ssl_ca_certs', None)
+        ssl_certfile = creds.get('ssl_certfile', None)
+        ssl_keyfile = creds.get('ssl_keyfile', None)
+        ssl_pem_passphrase = creds.get('ssl_pem_passphrase', None)
+        authsource = creds.get('authsource', None)
+        uri_mode = creds.get('uri_mode', False)
+        mongoclient_kwargs = creds.get('mongoclient_kwargs', None)
 
         coll_name = creds.get("filepad", "filepad")
         gfs_name = creds.get("filepad_gridfs", "filepad_gfs")
 
-        return cls(creds.get("host", "localhost"), int(creds.get("port", 27017)),
-                   creds.get("name", "fireworks"), user, password, coll_name,
-                   gfs_name)
+        text_mode = creds.get("text_mode", False)
+
+        return cls(
+            host=creds.get("host", "localhost"),
+            port=int(creds.get("port", 27017)),
+            database=creds.get("name", "fireworks"),
+            username=user,
+            password=password,
+            ssl=ssl,
+            ssl_ca_certs=ssl_ca_certs,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+            ssl_pem_passphrase=ssl_pem_passphrase,
+            authsource=authsource,
+            uri_mode=uri_mode,
+            mongoclient_kwargs=mongoclient_kwargs,
+            filepad_coll_name=coll_name,
+            gridfs_coll_name=gfs_name,
+            text_mode=text_mode)
 
     @classmethod
     def auto_load(cls):

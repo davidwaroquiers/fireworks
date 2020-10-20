@@ -10,11 +10,6 @@ import os
 from monty.serialization import loadfn, dumpfn
 from monty.design_patterns import singleton
 
-try:
-    from yaml import CSafeDumper as Dumper
-except ImportError:
-    from yaml import SafeDumper as Dumper
-
 __author__ = 'Anubhav Jain'
 __copyright__ = 'Copyright 2012, The Materials Project'
 __version__ = '0.1'
@@ -49,6 +44,9 @@ SUBMIT_SCRIPT_NAME = 'FW_submit.script'  # name of submit script
 PRINT_FW_JSON = True
 PRINT_FW_YAML = False
 
+JSON_SCHEMA_VALIDATE = False
+JSON_SCHEMA_VALIDATE_LIST = None
+
 PING_TIME_SECS = 3600  # while Running a job, how often to ping back the server that we're still alive
 RUN_EXPIRATION_SECS = PING_TIME_SECS * 4  # mark job as FIZZLED if not pinged in this time
 
@@ -67,6 +65,8 @@ FWORKER_LOC = None  # where to find the my_fworker.yaml file
 QUEUEADAPTER_LOC = None  # where to find the my_qadapter.yaml file
 
 CONFIG_FILE_DIR = '.'  # directory containing config files (if not individually set)
+
+ROCKET_STREAM_LOGLEVEL = "INFO"  # the streaming log level of the rocket.launcher logger
 
 QSTAT_FREQUENCY = 50  # set this higher to avoid qstats, lower to alwas
 
@@ -96,11 +96,15 @@ WEBSERVER_HOST = "127.0.0.1"  # default host on which the Flask web server runs
 
 WEBSERVER_PORT = 5000  # default port on which the Flask web server runs
 
-WEBSERVER_PERFWARNINGS = False # enable performance-related warnings
+WEBSERVER_PERFWARNINGS = False  # enable performance-related warnings
 
 # value of socketTimeoutMS when connection to mongoDB.  See pymongo official
 # documentation http://api.mongodb.org/python/current/api/pymongo/mongo_client.html
 MONGO_SOCKET_TIMEOUT_MS = 5 * 60 * 1000
+
+# name of the collection that will be used to store information in case the size of
+# a dynamically generated document exceeds the 16MB limit. Functionality disabled if None.
+GRIDFS_FALLBACK_COLLECTION = "fw_gridfs"
 
 
 def override_user_settings():
@@ -116,7 +120,7 @@ def override_user_settings():
         if fp not in config_paths and os.path.exists(fp):
             config_paths.append(fp)
 
-    if "FW_CONFIG_FILE" in os.environ and os.environ["FW_CONFIG_FILE"] not in\
+    if "FW_CONFIG_FILE" in os.environ and os.environ["FW_CONFIG_FILE"] not in \
             config_paths:
         config_paths.append(os.environ["FW_CONFIG_FILE"])
 
@@ -172,7 +176,7 @@ def config_to_dict():
 
 def write_config(path=None):
     path = os.path.join(os.path.expanduser('~'), ".fireworks", 'FW_config.yaml') if path is None else path
-    dumpfn(config_to_dict(), path, Dumper=Dumper)
+    dumpfn(config_to_dict(), path)
 
 
 @singleton

@@ -41,7 +41,7 @@ class TrackerTest(unittest.TestCase):
         try:
             cls.lp = LaunchPad(name=TESTDB_NAME, strm_lvl='ERROR')
             cls.lp.reset(password=None,require_password=False)
-        except:
+        except Exception:
             raise unittest.SkipTest("MongoDB is not running in localhost:27017! Skipping tests.")
 
     @classmethod
@@ -65,7 +65,8 @@ class TrackerTest(unittest.TestCase):
         for i in glob.glob(os.path.join(MODULE_DIR,'launcher_*')):
             shutil.rmtree(i)
 
-    def _teardown(self, dests):
+    @staticmethod
+    def _teardown(dests):
         for f in dests:
             if os.path.exists(f):
                 os.remove(f)
@@ -116,7 +117,7 @@ class TrackerTest(unittest.TestCase):
                 print("Bad rocket launched. The failure below is OK")
                 print("===========================================")
                 launch_rocket(self.lp, self.fworker)
-            except:
+            except Exception:
                 pass
 
             self.assertEqual('48\n49',self.tracker1.track_file())
@@ -155,7 +156,7 @@ class TrackerTest(unittest.TestCase):
             try:
                 launch_multiprocess(self.lp, self.fworker, 'ERROR',
                                     0, 2, 0, ppn=2)
-            except:
+            except Exception:
                 pass
 
             self.assertEqual('48\n49',self.tracker1.track_file())
@@ -167,7 +168,6 @@ class TrackerTest(unittest.TestCase):
             pwd = os.getcwd()
             for ldir in glob.glob(os.path.join(pwd,'launcher_*')):
                 shutil.rmtree(ldir)
-            pass
 
 
 if __name__ == '__main__':

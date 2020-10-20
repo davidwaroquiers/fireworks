@@ -35,6 +35,23 @@ def get_nested_dict(input_dict, key):
         current = current[tok]
 
 
+def arrow_to_dot(input_dict):
+    """
+    Converts arrows ('->') in dict keys to dots '.' recursively.
+    Allows for storing MongoDB neseted document queries in MongoDB.
+
+    Args:
+      input_dict (dict)
+
+    Returns:
+      dict
+    """
+    if not isinstance(input_dict, dict):
+        return input_dict
+    else:
+        return {k.replace("->", "."): arrow_to_dot(v) for k, v in input_dict.items()}
+
+
 @singleton
 class DictMods(object):
     """
@@ -116,7 +133,7 @@ class DictMods(object):
             (d, key) = get_nested_dict(input_dict, k)
             if key in d and (not isinstance(d[key], (list, tuple))):
                 raise ValueError("Keyword {} does not refer to an array."
-                .format(k))
+                                 .format(k))
             if key in d and v not in d[key]:
                 d[key].append(v)
             elif key not in d:
@@ -128,7 +145,7 @@ class DictMods(object):
             (d, key) = get_nested_dict(input_dict, k)
             if key in d and (not isinstance(d[key], (list, tuple))):
                 raise ValueError("Keyword {} does not refer to an array."
-                .format(k))
+                                 .format(k))
             if key in d:
                 d[key] = [i for i in d[key] if i != v]
 
@@ -137,7 +154,7 @@ class DictMods(object):
         for k, v in settings.items():
             if k in input_dict and (not isinstance(input_dict[k], (list, tuple))):
                 raise ValueError("Keyword {} does not refer to an array."
-                .format(k))
+                                 .format(k))
             for i in v:
                 DictMods.pull(input_dict, {k: i})
 
@@ -147,7 +164,7 @@ class DictMods(object):
             (d, key) = get_nested_dict(input_dict, k)
             if key in d and (not isinstance(d[key], (list, tuple))):
                 raise ValueError("Keyword {} does not refer to an array."
-                .format(k))
+                                 .format(k))
             if v == 1:
                 d[key].pop()
             elif v == -1:

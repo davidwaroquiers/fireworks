@@ -38,18 +38,11 @@ import importlib
 import datetime
 import abc
 import sys
-
-import yaml
-# Use CLoader for faster performance where possible.
-try:
-    from yaml import CLoader as Loader, CSafeDumper as Dumper
-except ImportError:
-    from yaml import Loader as Loader, SafeDumper as Dumper
 import six
-
+import ruamel.yaml as yaml
 from monty.json import MontyDecoder, MSONable
-
 from fireworks.fw_config import FW_NAME_UPDATES, YAML_STYLE, USER_PACKAGES, DECODE_MONTY, ENCODE_MONTY
+from fireworks.fw_config import JSON_SCHEMA_VALIDATE, JSON_SCHEMA_VALIDATE_LIST
 
 __author__ = 'Anubhav Jain'
 __copyright__ = 'Copyright 2012, The Materials Project'
@@ -70,9 +63,13 @@ else:
 
 try:
     import numpy as np
+
     NUMPY_INSTALLED = True
-except:
+except Exception:
     NUMPY_INSTALLED = False
+
+if JSON_SCHEMA_VALIDATE:
+    import fireworks_schema
 
 
 def recursive_dict(obj, preserve_unicode=True):
@@ -131,7 +128,7 @@ def _recursive_load(obj):
         try:
             # convert String to datetime if really datetime
             return reconstitute_dates(obj)
-        except:
+        except Exception:
             # convert unicode to ASCII if not really unicode
             if obj == obj.encode('ascii', 'ignore'):
                 return str(obj)
@@ -144,6 +141,7 @@ def recursive_serialize(func):
     a decorator to add FW serializations keys
     see documentation of FWSerializable for more details
     """
+
     def _decorator(self, *args, **kwargs):
         m_dict = func(self, *args, **kwargs)
         m_dict = recursive_dict(m_dict)
@@ -157,6 +155,7 @@ def recursive_deserialize(func):
     a decorator to add FW serializations keys
     see documentation of FWSerializable for more details
     """
+
     def _decorator(self, *args, **kwargs):
         new_args = [a for a in args]
         new_args[0] = {k: _recursive_load(v) for k, v in args[0].items()}
@@ -171,6 +170,7 @@ def serialize_fw(func):
     a decorator to add FW serializations keys
     see documentation of FWSerializable for more details
     """
+
     def _decorator(self, *args, **kwargs):
         m_dict = func(self, *args, **kwargs)
         m_dict['_fw_name'] = self.fw_name
@@ -237,8 +237,8 @@ class FWSerializable(object):
             return json.dumps(self.to_dict(), default=DATETIME_HANDLER, **kwargs)
         elif f_format == 'yaml':
             # start with the JSON format, and convert to YAML
-            return yaml.dump(self.to_dict(), default_flow_style=YAML_STYLE,
-                             allow_unicode=True, Dumper=Dumper)
+            return yaml.safe_dump(self.to_dict(), default_flow_style=YAML_STYLE,
+                                  allow_unicode=True)
         else:
             raise ValueError('Unsupported format {}'.format(f_format))
 
@@ -255,12 +255,14 @@ class FWSerializable(object):
             FWSerializable
         """
         if f_format == 'json':
-            return cls.from_dict(reconstitute_dates(json.loads(f_str)))
+            dct = json.loads(f_str)
         elif f_format == 'yaml':
-            return cls.from_dict(reconstitute_dates(
-                yaml.load(f_str, Loader=Loader)))
+            dct = yaml.safe_load(f_str)
         else:
             raise ValueError('Unsupported format {}'.format(f_format))
+        if JSON_SCHEMA_VALIDATE and cls.__name__ in JSON_SCHEMA_VALIDATE_LIST:
+            fireworks_schema.validate(dct, cls.__name__)
+        return cls.from_dict(reconstitute_dates(dct))
 
     def to_file(self, filename, f_format=None, **kwargs):
         """
@@ -348,10 +350,10 @@ def load_object(obj_dict):
     # failing that, look for the object within all of USER_PACKAGES
     # this will be slow, but only needed the first time
 
-    found_objects = [] # used to make sure we don't find multiple hits
+    found_objects = []  # used to make sure we don't find multiple hits
     for package in USER_PACKAGES:
         root_module = importlib.import_module(package)
-        for loader, mod_name, is_pkg in pkgutil.walk_packages(
+        for _, mod_name, is_pkg in pkgutil.walk_packages(
                 root_module.__path__, package + '.'):
             try:
                 m_module = importlib.import_module(mod_name)
@@ -370,8 +372,7 @@ def load_object(obj_dict):
         return found_objects[0][0]
     elif len(found_objects) > 0:
         raise ValueError(
-            'load_object() found multiple objects with cls._fw_name {} -- {}'
-            .format(fw_name, found_objects))
+            'load_object() found multiple objects with cls._fw_name {} -- {}'.format(fw_name, found_objects))
 
     raise ValueError('load_object() could not find a class with cls._fw_name {}'.format(fw_name))
 
@@ -386,19 +387,21 @@ def load_object_from_file(filename, f_format=None):
         f_format (str): the serialization format (default is auto-detect based on
             filename extension)
     """
-    m_dict = {}
     if f_format is None:
         f_format = filename.split('.')[-1]
 
     with open(filename, 'r', **ENCODING_PARAMS) as f:
         if f_format == 'json':
-            m_dict = reconstitute_dates(json.loads(f.read()))
+            dct = json.loads(f.read())
         elif f_format == 'yaml':
-            m_dict = reconstitute_dates(yaml.load(f, Loader=Loader))
+            dct = yaml.safe_load(f)
         else:
             raise ValueError('Unknown file format {} cannot be loaded!'.format(f_format))
 
-    return load_object(m_dict)
+    classname = FW_NAME_UPDATES.get(dct['_fw_name'], dct['_fw_name'])
+    if JSON_SCHEMA_VALIDATE and classname in JSON_SCHEMA_VALIDATE_LIST:
+        fireworks_schema.validate(dct, classname)
+    return load_object(reconstitute_dates(dct))
 
 
 def _search_module_for_obj(m_module, obj_dict):
@@ -407,7 +410,7 @@ def _search_module_for_obj(m_module, obj_dict):
     """
     obj_name = obj_dict['_fw_name']
 
-    for name, obj in inspect.getmembers(m_module):
+    for _, obj in inspect.getmembers(m_module):
         # check if the member is a Class matching our description
         if inspect.isclass(obj) and obj.__module__ == m_module.__name__ and \
                 getattr(obj, '_fw_name', get_default_serialization(obj)) == obj_name:
@@ -427,10 +430,10 @@ def reconstitute_dates(obj_dict):
     if isinstance(obj_dict, six.string_types):
         try:
             return datetime.datetime.strptime(obj_dict, "%Y-%m-%dT%H:%M:%S.%f")
-        except:
+        except Exception:
             try:
                 return datetime.datetime.strptime(obj_dict, "%Y-%m-%dT%H:%M:%S")
-            except:
+            except Exception:
                 pass
     return obj_dict
 

@@ -33,6 +33,7 @@ class FileWriteTask(FiretaskBase):
     """
     _fw_name = 'FileWriteTask'
     required_params = ["files_to_write"]
+    optional_params = ["dest"]
 
     def run_task(self, fw_spec):
         pth = self.get("dest", os.getcwd())
@@ -54,7 +55,7 @@ class FileDeleteTask(FiretaskBase):
     """
     _fw_name = 'FileDeleteTask'
     required_params = ["files_to_delete"]
-
+    optional_params = ["dest", "ignore_errors"]
 
     def run_task(self, fw_spec):
         pth = self.get("dest", os.getcwd())
@@ -75,9 +76,9 @@ class FileTransferTask(FiretaskBase):
         - mode: (str) - move, mv, copy, cp, copy2, copytree, copyfile, rtransfer
         - files: ([str]) or ([(str, str)]) - list of source files, or dictionary containing
                 'src' and 'dest' keys
-        - dest: (str) destination directory, if not specified within files parameter
 
     Optional params:
+        - dest: (str) destination directory, if not specified within files parameter (else optional)
         - server: (str) server host for remote transfer
         - user: (str) user to authenticate with on remote server
         - key_filename: (str) optional SSH key location for remote transfer
@@ -86,15 +87,16 @@ class FileTransferTask(FiretaskBase):
     """
     _fw_name = 'FileTransferTask'
     required_params = ["mode", "files"]
+    optional_params = ["dest", "server", "user", "key_filename", "max_retry", "retry_delay"]
 
     fn_list = {
-            "move": shutil.move,
-            "mv": shutil.move,
-            "copy": shutil.copy,
-            "cp": shutil.copy,
-            "copy2": shutil.copy2,
-            "copytree": shutil.copytree,
-            "copyfile": shutil.copyfile,
+        "move": shutil.move,
+        "mv": shutil.move,
+        "copy": shutil.copy,
+        "cp": shutil.copy,
+        "copy2": shutil.copy2,
+        "copytree": shutil.copytree,
+        "copyfile": shutil.copyfile,
     }
 
     def run_task(self, fw_spec):
@@ -127,7 +129,7 @@ class FileTransferTask(FiretaskBase):
                             sftp.mkdir(dest)
 
                         for f in os.listdir(src):
-                            if os.path.isfile(os.path.join(src,f)):
+                            if os.path.isfile(os.path.join(src, f)):
                                 sftp.put(os.path.join(src, f), os.path.join(dest, f))
                     else:
                         if not self._rexists(sftp, dest):
@@ -142,7 +144,7 @@ class FileTransferTask(FiretaskBase):
                         dest = abspath(expanduser(expandvars(self['dest']))) if shell_interpret else self['dest']
                     FileTransferTask.fn_list[mode](src, dest)
 
-            except:
+            except Exception:
                 traceback.print_exc()
                 if max_retry:
 
@@ -160,7 +162,8 @@ class FileTransferTask(FiretaskBase):
             sftp.close()
             ssh.close()
 
-    def _rexists(self, sftp, path):
+    @staticmethod
+    def _rexists(sftp, path):
         """
         os.path.exists for paramiko's SCP object
         """
@@ -193,7 +196,7 @@ class CompressDirTask(FiretaskBase):
         compression = self.get("compression", "gz")
         try:
             compress_dir(dest, compression=compression)
-        except:
+        except Exception:
             if not ignore_errors:
                 raise ValueError("There was an error performing compression {} in {}.".format(
                     compression, dest))
@@ -217,7 +220,7 @@ class DecompressDirTask(FiretaskBase):
         dest = self.get("dest", os.getcwd())
         try:
             decompress_dir(dest)
-        except:
+        except Exception:
             if not ignore_errors:
                 raise ValueError(
                     "There was an error performing decompression in %s." % dest)

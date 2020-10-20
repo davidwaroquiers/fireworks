@@ -11,6 +11,16 @@ import os
 import sys
 import time
 
+try:
+    import fabric
+
+    if int(fabric.__version__.split('.')[0]) < 2:
+        raise ImportError
+except ImportError:
+    HAS_FABRIC = False
+else:
+    HAS_FABRIC = True
+
 from fireworks.fw_config import QUEUEADAPTER_LOC, CONFIG_FILE_DIR, FWORKER_LOC, LAUNCHPAD_LOC
 from fireworks.core.fworker import FWorker
 from fireworks.core.launchpad import LaunchPad
@@ -29,14 +39,20 @@ def do_launch(args):
     if not args.launchpad_file and os.path.exists(
             os.path.join(args.config_dir, 'my_launchpad.yaml')):
         args.launchpad_file = os.path.join(args.config_dir, 'my_launchpad.yaml')
+    elif not args.launchpad_file:
+        args.launchpad_file = LAUNCHPAD_LOC
 
     if not args.fworker_file and os.path.exists(
             os.path.join(args.config_dir, 'my_fworker.yaml')):
         args.fworker_file = os.path.join(args.config_dir, 'my_fworker.yaml')
+    elif not args.fworker_file:
+        args.fworker_file = FWORKER_LOC
 
     if not args.queueadapter_file and os.path.exists(
             os.path.join(args.config_dir, 'my_qadapter.yaml')):
         args.queueadapter_file = os.path.join(args.config_dir, 'my_qadapter.yaml')
+    elif not args.queueadapter_file:
+        args.queueadapter_file = QUEUEADAPTER_LOC
 
     launchpad = LaunchPad.from_file(
         args.launchpad_file) if args.launchpad_file else LaunchPad(
@@ -53,7 +69,8 @@ def do_launch(args):
                   reserve=args.reserve, strm_lvl=args.loglvl, timeout=args.timeout, fill_mode=args.fill_mode)
     else:
         launch_rocket_to_queue(launchpad, fworker, queueadapter,
-                               args.launch_dir, args.reserve, args.loglvl, False, args.fill_mode)
+                               args.launch_dir, args.reserve, args.loglvl, False, args.fill_mode, args.fw_id)
+
 
 def qlaunch():
     m_description = 'This program is used to submit jobs to a queueing system. ' \
@@ -94,6 +111,10 @@ def qlaunch():
                         help="Shell command to use on remote host for running submission.",
                         default='/bin/bash -l -c')
 
+    parser.add_argument("-rkf", "--remote_keyfile",
+                        help="SSH keyfile for connecting to remote hosts",
+                        type=str, default=None)
+
     parser.add_argument("-rs", "--remote_setup",
                         help="Setup the remote config dir using files in "
                              "the directory specified by -c.",
@@ -109,10 +130,9 @@ def qlaunch():
     parser.add_argument('--loglvl', help='level to print log messages', default='INFO')
     parser.add_argument('-s', '--silencer', help='shortcut to mute log messages', action='store_true')
     parser.add_argument('-r', '--reserve', help='reserve a fw', action='store_true')
-    parser.add_argument('-l', '--launchpad_file', help='path to launchpad file', default=LAUNCHPAD_LOC)
-    parser.add_argument('-w', '--fworker_file', help='path to fworker file', default=FWORKER_LOC)
-    parser.add_argument('-q', '--queueadapter_file', help='path to queueadapter file',
-                        default=QUEUEADAPTER_LOC)
+    parser.add_argument('-l', '--launchpad_file', help='path to launchpad file')
+    parser.add_argument('-w', '--fworker_file', help='path to fworker file')
+    parser.add_argument('-q', '--queueadapter_file', help='path to queueadapter file')
     parser.add_argument('-c', '--config_dir',
                         help='path to a directory containing the config file (used if -l, -w, -q unspecified)',
                         default=CONFIG_FILE_DIR)
@@ -120,7 +140,7 @@ def qlaunch():
                         action='store_true')
 
     rapid_parser.add_argument('-m', '--maxjobs_queue',
-                              help='maximum jobs to keep in queue for this user', default=0,
+                              help='maximum jobs to keep in queue for this user. 0 for no limit', default=0,
                               type=int)
     rapid_parser.add_argument('-b', '--maxjobs_block',
                               help='maximum jobs to put in a block',
@@ -131,8 +151,8 @@ def qlaunch():
     rapid_parser.add_argument('--timeout', help='timeout (secs) after which to quit (default None)',
                               default=None, type=int)
     rapid_parser.add_argument('--sleep', help='sleep time between loops', default=None, type=int)
-    
-    single_parser.add_argument('-f', '--fw_id', help='specific fw_id to run in reservation mode', 
+
+    single_parser.add_argument('-f', '--fw_id', help='specific fw_id to run in reservation mode',
                                default=None, type=int)
 
     try:
@@ -147,27 +167,28 @@ def qlaunch():
 
     args = parser.parse_args()
 
-    if args.remote_host:
-        try:
-            from fabric.api import settings, run, cd
-            from fabric.network import disconnect_all
-            from fabric.operations import put
-        except ImportError:
-            print("Remote options require the Fabric package to be "
-                  "installed!")
-            sys.exit(-1)
+    if args.remote_host and not HAS_FABRIC:
+        print("Remote options require the Fabric package v2+ to be installed!")
+        sys.exit(-1)
 
-    if args.remote_setup:
-        if args.remote_host:
-            for h in args.remote_host:
-                with settings(host_string=h, user=args.remote_user,
-                              password=args.remote_password):
-                    for r in args.remote_config_dir:
-                        r = os.path.expanduser(r)
-                        run("mkdir -p {}".format(r))
-                        for f in os.listdir(args.config_dir):
-                            if os.path.isfile(f):
-                                put(f, os.path.join(r, f))
+    if args.remote_setup and args.remote_host:
+        for h in args.remote_host:
+            conf = fabric.Configuration()
+            conf.run.shell = args.remote_shell
+            connect_kwargs = {'password': args.remote_password}
+            if args.remote_keyfile:
+                connect_kwargs["key_filename"] = args.remote_keyfile
+            with fabric.Connection(
+                    host=h,
+                    user=args.remote_user,
+                    config=fabric.Config({'run': {'shell': args.remote_shell}}),
+                    connect_kwargs=connect_kwargs) as conn:
+                for r in args.remote_config_dir:
+                    r = os.path.expanduser(r)
+                    conn.run("mkdir -p {}".format(r))
+                    for f in os.listdir(args.config_dir):
+                        if os.path.isfile(f):
+                            conn.put(f, os.path.join(r, f))
     non_default = []
     for k in ["maxjobs_queue", "maxjobs_block", "nlaunches", "sleep"]:
         v = getattr(args, k, None)
@@ -185,15 +206,20 @@ def qlaunch():
     interval = args.daemon
     while True:
         if args.remote_host:
+            connect_kwargs = {'password': args.remote_password}
+            if args.remote_keyfile:
+                connect_kwargs["key_filename"] = args.remote_keyfile
             for h in args.remote_host:
-                with settings(host_string=h, user=args.remote_user,
-                              password=args.remote_password, shell=args.remote_shell):
+                with fabric.Connection(
+                        host=h,
+                        user=args.remote_user,
+                        config=fabric.Config({'run': {'shell': args.remote_shell}}),
+                        connect_kwargs=connect_kwargs) as conn:
                     for r in args.remote_config_dir:
                         r = os.path.expanduser(r)
-                        with cd(r):
-                            run("qlaunch {} {} {}".format(
+                        with conn.cd(r):
+                            conn.run("qlaunch {} {} {}".format(
                                 pre_non_default, args.command, non_default))
-            disconnect_all()
         else:
             do_launch(args)
         if interval > 0:
@@ -202,6 +228,7 @@ def qlaunch():
             time.sleep(args.daemon)
         else:
             break
+
 
 if __name__ == '__main__':
     qlaunch()

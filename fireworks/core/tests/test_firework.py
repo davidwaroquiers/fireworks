@@ -16,8 +16,9 @@ __date__ = "2/26/14"
 
 import unittest
 
-from fireworks.core.firework import Firework, Workflow, FiretaskBase
+from fireworks.core.firework import Firework, Workflow, FiretaskBase, FWAction
 from fireworks.user_objects.firetasks.script_task import PyTask
+from fireworks.utilities.fw_utilities import explicit_serialize
 
 
 class FiretaskBaseTest(unittest.TestCase):
@@ -30,7 +31,8 @@ class FiretaskBaseTest(unittest.TestCase):
             def run_task(self, fw_spec):
                 return self["hello"]
 
-        self.assertRaises(ValueError, DummyTask)
+        with self.assertRaises(RuntimeError):
+            DummyTask()
         d = DummyTask(hello="world")
         self.assertEqual(d.run_task({}), "world")
         d = DummyTask({"hello": "world2"})
@@ -43,8 +45,63 @@ class FiretaskBaseTest(unittest.TestCase):
         d = DummyTask2()
         self.assertRaises(NotImplementedError, d.run_task, {})
 
+    def test_param_checks(self):
+
+        class DummyTask(FiretaskBase):
+            _fw_name = "DummyTask"
+            required_params = ["param1"]
+            optional_params = ["param2"]
+
+        self.assertRaises(RuntimeError, DummyTask, param2=3)  # missing required param
+        self.assertRaises(RuntimeError, DummyTask, param1=3, param3=5)  # extraneous param
+        DummyTask(param1=1)  # OK
+        DummyTask(param1=1, param2=1)  # OK
+
+
+class PickleTask(FiretaskBase):
+    required_params = ["test"]
+
+    def run_task(self, fw_spec):
+        return self["test"]
+
+
+class FiretaskPickleTest(unittest.TestCase):
+    def setUp(self):
+        import pickle
+        self.task = PickleTask(test=0)
+        self.pkl_task = pickle.dumps(self.task)
+        self.upkl_task = pickle.loads(self.pkl_task)
+
+    def test_init(self):
+        self.assertIsInstance(self.upkl_task, PickleTask)
+        self.assertEqual(PickleTask.from_dict(self.task.to_dict()), self.upkl_task)
+        self.assertEqual(dir(self.task), dir(self.upkl_task))
+
+        result_task = self.task.run_task({})
+        result_upkl_task = self.upkl_task.run_task({})
+        self.assertEqual(result_task, result_upkl_task)
+
+
+@explicit_serialize
+class Task1(FiretaskBase):
+    def run_task(self, fw_spec):
+        print("task1", fw_spec)
+        return FWAction(stored_data={"color": "red"})
+
+
+@explicit_serialize
+class Task2(FiretaskBase):
+    def run_task(self, fw_spec):
+        print("task2", fw_spec)
+        return FWAction(stored_data={"color": "yellow"})
+
 
 class WorkflowTest(unittest.TestCase):
+
+    def setUp(self):
+        self.fw1 = Firework(Task1())
+        self.fw2 = Firework([Task2(), Task2()], parents=self.fw1)
+        self.fw3 = Firework(Task1(), parents=self.fw1)
 
     def test_init(self):
 
@@ -69,7 +126,7 @@ class WorkflowTest(unittest.TestCase):
         fws = []
         for i in range(5):
             fw = Firework([PyTask(func="print", args=[i])], fw_id=i,
-                          name=i)
+                          name=str(i))
             fws.append(fw)
 
         wf = Workflow(fws, links_dict={0: [1, 2, 3], 1: [4], 2: [4]})
@@ -87,6 +144,28 @@ class WorkflowTest(unittest.TestCase):
 
             for child_id, orig_child_id in zip(children, orig_children):
                 self.assertEqual(orig_child_id, wf_copy.id_fw[child_id].name)
+
+    def test_remove_leaf_fws(self):
+        fw4 = Firework(Task1(), parents=[self.fw2, self.fw3])
+        fws = [self.fw1, self.fw2, self.fw3, fw4]
+        wflow = Workflow(fws)
+        leaf_ids = wflow.leaf_fw_ids
+        parents = []
+        for i in leaf_ids:
+            parents.extend(wflow.links.parent_links[i])
+        wflow.remove_fws(wflow.leaf_fw_ids)
+        self.assertEqual(wflow.leaf_fw_ids, parents)
+
+    def test_remove_root_fws(self):
+        fw4 = Firework(Task1(), parents=[self.fw2, self.fw3])
+        fws = [self.fw1, self.fw2, self.fw3, fw4]
+        wflow = Workflow(fws)
+        root_ids = wflow.root_fw_ids
+        children = []
+        for i in root_ids:
+            children.extend(wflow.links[i])
+        wflow.remove_fws(wflow.root_fw_ids)
+        self.assertEqual(sorted(wflow.root_fw_ids), sorted(children))
 
 
 if __name__ == '__main__':

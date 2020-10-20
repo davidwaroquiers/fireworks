@@ -7,6 +7,7 @@ from fireworks import Firework, LaunchPad, FWorker
 from fireworks.core.rocket_launcher import launch_rocket
 from fireworks.core.tests.tasks import ExceptionTestTask, MalformedAdditionTask
 
+
 TESTDB_NAME = 'fireworks_unittest'
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -20,7 +21,7 @@ class RocketTest(unittest.TestCase):
         try:
             cls.lp = LaunchPad(name=TESTDB_NAME, strm_lvl='ERROR')
             cls.lp.reset(password=None, require_password=False)
-        except:
+        except Exception:
             raise unittest.SkipTest('MongoDB is not running in localhost:27017! Skipping tests.')
 
     @classmethod
